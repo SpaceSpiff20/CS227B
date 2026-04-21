@@ -24,6 +24,7 @@ function start(r, rs, sc, pc) {
   library = definemorerules([], rs.slice(1));
   roles = findroles(library);
   state = findinits(library);
+  console.log("[start] role=" + role + " startclock=" + startclock + " playclock=" + playclock + " roles=" + roles.length);
   return "ready";
 }
 
@@ -57,22 +58,28 @@ var deadline = 0;
 function playminimax(role) {
   var actions = shuffle(findlegals(state, library));
   if (actions.length === 0) {
+    console.log("[minimax] no legal actions");
     return false;
   }
   if (actions.length === 1) {
+    console.log("[minimax] only one action, returning immediately");
     return actions[0];
   }
   deadline = Date.now() + (playclock - 1) * 1000;
   var action = actions[0];
   var score = 0;
   nodes = 0;
+  var timedOut = false;
+  console.log("[minimax] searching " + actions.length + " actions, deadline in " + (playclock - 1) + "s");
   for (var i = 0; i < actions.length; i++) {
-    if (Date.now() > deadline) break;
-    //console.log(grind(actions[i]));
+    if (Date.now() > deadline) {
+      timedOut = true;
+      break;
+    }
     var newstate = simulate(actions[i], state, library);
     var newscore = minimax(role, newstate);
-    //console.log(newscore);
     if (newscore === 100) {
+      console.log("[minimax] found winning move at action " + i + ", nodes=" + nodes + " terminals=" + terminals);
       return actions[i];
     }
     if (newscore > score) {
@@ -80,6 +87,7 @@ function playminimax(role) {
       score = newscore;
     }
   }
+  console.log("[minimax] done — nodes=" + nodes + " terminals=" + terminals + " bestScore=" + score + (timedOut ? " (timed out after " + i + "/" + actions.length + " actions)" : ""));
   return action;
 }
 
