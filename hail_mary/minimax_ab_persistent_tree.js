@@ -242,6 +242,9 @@ function chooseChildByTreePolicy(node) {
 
   for (var i = 0; i < node.children.length; i++) {
     var child = node.children[i];
+    if (child.solved) {
+      continue;
+    }
     if (child.visits === 0) {
       return child;
     }
@@ -320,21 +323,6 @@ function updateSolvedStatus(node) {
     }
   }
 
-  // If there are still unexpanded actions, outcomes not covered by current
-  // children remain unknown and we cannot mark this node solved (except terminal).
-  if (node.unexpandedActions.length > 0) {
-    node.solved = false;
-    node.solvedValue = null;
-    return;
-  }
-
-  // With full expansion, solved minimax value is exact when all children solved.
-  if (allChildrenSolved) {
-    node.solved = true;
-    node.solvedValue = minimaxChildValue(node);
-    return;
-  }
-
   // Early proofs:
   // - At MAX nodes (our turn), one solved 100 child proves a forced win.
   // - At MIN nodes (opponent turn), one solved 0 child proves they can force our loss.
@@ -346,6 +334,22 @@ function updateSolvedStatus(node) {
   if (node.actor !== role && anyChildLoss0) {
     node.solved = true;
     node.solvedValue = 0;
+    return;
+  }
+
+  // If there are still unexpanded actions, outcomes not covered by current
+  // children remain unknown and we cannot mark this node solved (except terminal
+  // and the early forced-outcome proofs above).
+  if (node.unexpandedActions.length > 0) {
+    node.solved = false;
+    node.solvedValue = null;
+    return;
+  }
+
+  // With full expansion, solved minimax value is exact when all children solved.
+  if (allChildrenSolved) {
+    node.solved = true;
+    node.solvedValue = minimaxChildValue(node);
     return;
   }
 
