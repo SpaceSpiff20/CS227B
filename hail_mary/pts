@@ -1,0 +1,202 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>hail_mary_pts</title>
+  <script type='text/javascript' src='http://epilog.stanford.edu/javascript/epilog.js'></script>
+  <script type='text/javascript' src='http://gamemaster.stanford.edu/javascript/localstorage.js'></script>
+  <script type='text/javascript' src='http://gamemaster.stanford.edu/reasoning/general.js'></script>
+  <script type='text/javascript'>
+
+var manager = "manager";
+var player = "hail_mary_pts";
+
+var role = "robot";
+var rules = [];
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var roles = [];
+var state = [];
+var tree = {};
+
+//==============================================================================
+
+function ping() { return "ready"; }
+
+function start(r, rs, sc, pc) {
+  role = r;
+  rules = rs.slice(1);
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+  library = definemorerules([], rs.slice(1));
+  roles = findroles(library);
+  state = findinits(library);
+  var reward = parseInt(findreward(role, state, library));
+  tree = makenode(state, findcontrol(state, library), reward);
+  return "ready";
+}
+
+function play(move) {
+  if (move !== nil) {
+    tree = subtree(move, tree);
+    state = tree.state;
+  }
+  if (findcontrol(state, library) !== role) { return false; }
+  var deadline = Date.now() + (playclock - 2) * 1000;
+  while (Date.now() < deadline) { process(tree); }
+  return selectaction(tree);
+}
+
+function stop(move) { return false; }
+function abort() { return false; }
+
+//==============================================================================
+
+function makenode(state, mover, reward) {
+  return { state:state, actions:[], children:[], mover:mover, utility:reward, visits:0 };
+}
+
+function process(node) {
+  if (findterminalp(node.state, library)) { return true; }
+  if (node.children.length === 0) { expand(node); }
+  else { process(select(node)); }
+  update(node);
+  return true;
+}
+
+function expand(node) {
+  node.actions = findlegals(node.state, library);
+  for (var i = 0; i < node.actions.length; i++) {
+    var newstate = simulate(node.actions[i], node.state, library);
+    var newmover = findcontrol(newstate, library);
+    var newscore = parseInt(findreward(role, newstate, library));
+    node.children[i] = makenode(newstate, newmover, newscore);
+  }
+  return true;
+}
+
+function select(node) {
+  var total = node.visits;
+  var best = node.children[0];
+  var score = value(best.utility, best.visits, total);
+  for (var i = 1; i < node.children.length; i++) {
+    var newscore = value(node.children[i].utility, node.children[i].visits, total);
+    if (newscore > score) { best = node.children[i]; score = newscore; }
+  }
+  return best;
+}
+
+function value(utility, visits, total) {
+  return utility + Math.round((1 - visits / (total + 1)) * 100);
+}
+
+function update(node) {
+  if (node.mover === role) { node.utility = scoremax(node); }
+  else { node.utility = scoremin(node); }
+  node.visits = node.visits + 1;
+  return true;
+}
+
+function scoremax(node) {
+  var score = node.children[0].utility;
+  for (var i = 1; i < node.children.length; i++) {
+    if (node.children[i].utility > score) { score = node.children[i].utility; }
+  }
+  return score;
+}
+
+function scoremin(node) {
+  var score = node.children[0].utility;
+  for (var i = 1; i < node.children.length; i++) {
+    if (node.children[i].utility < score) { score = node.children[i].utility; }
+  }
+  return score;
+}
+
+function selectaction(node) {
+  if (node.children.length === 0) { expand(node); }
+  var best = node.actions[0];
+  var score = node.children[0].utility;
+  for (var i = 1; i < node.children.length; i++) {
+    if (node.children[i].utility > score) {
+      best = node.actions[i];
+      score = node.children[i].utility;
+    }
+  }
+  return best;
+}
+
+function subtree(move, node) {
+  if (node.children.length === 0) { expand(node); }
+  for (var i = 0; i < node.actions.length; i++) {
+    if (equalp(move, node.actions[i])) { return node.children[i]; }
+  }
+  return node;
+}
+
+//==============================================================================
+
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='doinitialize()'>
+  <center>
+    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <img width='130' src='http://gamemaster.stanford.edu/images/ggp.jpg'/>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>
+  <tr height='40'>
+    <td align='center'>
+      <table style='color:#000066;font-size:18px'>
+        <tr>
+          <td>
+            Protocol: localstorage<br/>
+            Metagamer: none<br/>
+            Strategy: custom<br/>
+            Identifier: <span id='player'>hail_mary_pts</span> <img src="http://gamemaster.stanford.edu/images/pencil.gif" onclick='doplayer()'/>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+<br/>
+
+<center>
+  <br/>
+  <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+</center>
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+</html>1
