@@ -37,6 +37,12 @@ var sampleTerminalCount = 0;
 var sampleTerminalRewardSum = 0;
 var sampleAvgTerminalReward = 50;
 var sampleTerminalRate = 0;
+var sampleFeatureCount = 0;
+var sampleRewardSum = 0;
+var sampleRewardSqSum = 0;
+var sampleMobilitySum = 0;
+var sampleMobilitySqSum = 0;
+var rewardHeuristicWeight = 0.35;
 var payoffStability = 0.35;
 var controlStability = 0.65;
 
@@ -70,6 +76,8 @@ function start(r, rs, sc, pc) {
       samplePlayouts +
       " avgReward=" +
       sampleAvgTerminalReward +
+      " rewardWeight=" +
+      rewardHeuristicWeight +
       " expansionsCap=" +
       maxExpansionsPerMove
   );
@@ -99,7 +107,25 @@ function play(move) {
     return actions[0];
   }
 
+  var immediateWin = findImmediateWinningAction(actions, state);
+  if (immediateWin !== null) {
+    console.log("[persistent_tree] taking immediate win " + grind(immediateWin));
+    return immediateWin;
+  }
+
   var selected = playPersistentMinimax(role);
+  if (allowsOpponentImmediateWin(selected, state)) {
+    var safeAction = bestSafeAction(actions, state);
+    if (safeAction !== null) {
+      console.log(
+        "[persistent_tree] overriding unsafe action " +
+          grind(selected) +
+          " with immediate-safe action " +
+          grind(safeAction)
+      );
+      return safeAction;
+    }
+  }
   return selected;
 }
 
@@ -150,6 +176,65 @@ function playPersistentMinimax(role) {
       " bestAction=" +
       grind(bestAction)
   );
+  return bestAction;
+}
+
+function findImmediateWinningAction(actions, currentState) {
+  for (var i = 0; i < actions.length; i++) {
+    var nextState = simulate(actions[i], currentState, library);
+    if (findterminalp(nextState, library)) {
+      var reward = findreward(role, nextState, library) * 1;
+      if (reward === 100) {
+        return actions[i];
+      }
+    }
+  }
+  return null;
+}
+
+function allowsOpponentImmediateWin(action, currentState) {
+  if (action === false || action === null) {
+    return false;
+  }
+
+  var nextState = simulate(action, currentState, library);
+  if (findterminalp(nextState, library)) {
+    return false;
+  }
+  if (findcontrol(nextState, library) === role) {
+    return false;
+  }
+
+  var replies = findlegals(nextState, library);
+  for (var i = 0; i < replies.length; i++) {
+    var replyState = simulate(replies[i], nextState, library);
+    if (
+      findterminalp(replyState, library) &&
+      findreward(role, replyState, library) * 1 === 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function bestSafeAction(actions, currentState) {
+  var bestAction = null;
+  var bestValue = -1;
+
+  for (var i = 0; i < actions.length; i++) {
+    if (allowsOpponentImmediateWin(actions[i], currentState)) {
+      continue;
+    }
+
+    var nextState = simulate(actions[i], currentState, library);
+    var value = terminalOrHeuristic(role, nextState);
+    if (value > bestValue) {
+      bestValue = value;
+      bestAction = actions[i];
+    }
+  }
+
   return bestAction;
 }
 
@@ -248,8 +333,11 @@ function chooseChildByTreePolicy(node) {
     if (child.visits === 0) {
       return child;
     }
+    var averageUtility = child.utility / child.visits;
+    var exploitation =
+      node.actor === role ? averageUtility : 100 - averageUtility;
     var score =
-      child.utility / child.visits +
+      exploitation +
       selectionC * Math.sqrt(Math.log(parentVisits) / child.visits);
 
     if (score > bestScore) {
@@ -492,6 +580,12 @@ function buildSamplingModel() {
   sampleTerminalRewardSum = 0;
   sampleAvgTerminalReward = 50;
   sampleTerminalRate = 0;
+  sampleFeatureCount = 0;
+  sampleRewardSum = 0;
+  sampleRewardSqSum = 0;
+  sampleMobilitySum = 0;
+  sampleMobilitySqSum = 0;
+  rewardHeuristicWeight = 0.35;
 
   while (Date.now() < samplingDeadline) {
     runRandomSamplePlayout();
@@ -505,6 +599,7 @@ function buildSamplingModel() {
   if (sampleStateCount > 0) {
     sampleTerminalRate = sampleTerminalCount / sampleStateCount;
   }
+  estimateRewardSignalWeight();
 }
 
 function runRandomSamplePlayout() {
@@ -525,6 +620,7 @@ function runRandomSamplePlayout() {
     if (actions.length > sampleMaxLegal) {
       sampleMaxLegal = actions.length;
     }
+    recordSampleFeatures(sampleState, actions.length);
     if (actions.length === 0) {
       samplePlayouts = samplePlayouts + 1;
       return;
@@ -535,6 +631,38 @@ function runRandomSamplePlayout() {
   }
 
   samplePlayouts = samplePlayouts + 1;
+}
+
+function recordSampleFeatures(sampleState, legalCount) {
+  var reward = findreward(role, sampleState, library) * 1;
+  sampleFeatureCount = sampleFeatureCount + 1;
+  sampleRewardSum = sampleRewardSum + reward;
+  sampleRewardSqSum = sampleRewardSqSum + reward * reward;
+  sampleMobilitySum = sampleMobilitySum + legalCount;
+  sampleMobilitySqSum = sampleMobilitySqSum + legalCount * legalCount;
+}
+
+function estimateRewardSignalWeight() {
+  if (sampleFeatureCount <= 1) {
+    rewardHeuristicWeight = 0.35;
+    return;
+  }
+
+  var rewardMean = sampleRewardSum / sampleFeatureCount;
+  var rewardVariance =
+    sampleRewardSqSum / sampleFeatureCount - rewardMean * rewardMean;
+  var mobilityMean = sampleMobilitySum / sampleFeatureCount;
+  var mobilityVariance =
+    sampleMobilitySqSum / sampleFeatureCount - mobilityMean * mobilityMean;
+
+  var rewardSignal = Math.sqrt(Math.max(0, rewardVariance)) / 100;
+  var mobilitySignal =
+    Math.sqrt(Math.max(0, mobilityVariance)) / Math.max(1, sampleMaxLegal);
+  var signalRatio = rewardSignal / (rewardSignal + mobilitySignal + 0.001);
+
+  // Keep some generic heuristic influence, but trust reward heavily when it
+  // varies meaningfully across sampled states.
+  rewardHeuristicWeight = clampUnit(0.2 + 0.75 * signalRatio);
 }
 
 function updateHistoryScore(parent, action, child) {
@@ -582,8 +710,9 @@ function heuristicEval(role, state) {
   var legalMoves = findlegals(state, library).length;
   var mobilityRatio = Math.min(1, legalMoves / Math.max(1, sampleMaxLegal));
 
-  var payoff = findreward(role, state, library) * 1;
-  if (payoff === 0 && sampleTerminalCount > 0) {
+  var rawReward = findreward(role, state, library) * 1;
+  var payoff = rawReward;
+  if (payoff === 0 && sampleTerminalCount > 0 && rewardHeuristicWeight < 0.5) {
     payoff = Math.round(0.4 * payoff + 0.6 * sampleAvgTerminalReward);
   }
 
@@ -597,7 +726,9 @@ function heuristicEval(role, state) {
     (1 - terminalLikelihood) *
       ((50 + 50 * control) * controlStability + payoffStability * payoff);
 
-  return clampScore(Math.round(value));
+  return clampScore(
+    Math.round(rewardHeuristicWeight * rawReward + (1 - rewardHeuristicWeight) * value)
+  );
 }
 
 function clampScore(v) {
