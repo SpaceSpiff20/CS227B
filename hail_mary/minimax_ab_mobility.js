@@ -1,5 +1,5 @@
 var manager = "manager";
-var player = "hail_mary_minimax_ab_mobility";
+var player = "hail_mary_mobility";
 
 var role = "robot";
 var rules = [];

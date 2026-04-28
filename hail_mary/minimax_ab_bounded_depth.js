@@ -1,5 +1,5 @@
 var manager = "manager";
-var player = "hail_mary_minimax_ab_bounded_depth";
+var player = "hail_mary_bounded";
 
 var role = "robot";
 var rules = [];
