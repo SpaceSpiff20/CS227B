@@ -113,20 +113,7 @@ function play(move) {
     return immediateWin;
   }
 
-  var selected = playPersistentMinimax(role);
-  if (allowsOpponentImmediateWin(selected, state)) {
-    var safeAction = bestSafeAction(actions, state);
-    if (safeAction !== null) {
-      console.log(
-        "[persistent_tree] overriding unsafe action " +
-          grind(selected) +
-          " with immediate-safe action " +
-          grind(safeAction)
-      );
-      return safeAction;
-    }
-  }
-  return selected;
+  return playPersistentMinimax(role);
 }
 
 function stop(move) {
@@ -190,52 +177,6 @@ function findImmediateWinningAction(actions, currentState) {
     }
   }
   return null;
-}
-
-function allowsOpponentImmediateWin(action, currentState) {
-  if (action === false || action === null) {
-    return false;
-  }
-
-  var nextState = simulate(action, currentState, library);
-  if (findterminalp(nextState, library)) {
-    return false;
-  }
-  if (findcontrol(nextState, library) === role) {
-    return false;
-  }
-
-  var replies = findlegals(nextState, library);
-  for (var i = 0; i < replies.length; i++) {
-    var replyState = simulate(replies[i], nextState, library);
-    if (
-      findterminalp(replyState, library) &&
-      findreward(role, replyState, library) * 1 === 0
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function bestSafeAction(actions, currentState) {
-  var bestAction = null;
-  var bestValue = -1;
-
-  for (var i = 0; i < actions.length; i++) {
-    if (allowsOpponentImmediateWin(actions[i], currentState)) {
-      continue;
-    }
-
-    var nextState = simulate(actions[i], currentState, library);
-    var value = terminalOrHeuristic(role, nextState);
-    if (value > bestValue) {
-      bestValue = value;
-      bestAction = actions[i];
-    }
-  }
-
-  return bestAction;
 }
 
 function selectNodeForExpansion(start) {
