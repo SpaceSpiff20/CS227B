@@ -27,6 +27,7 @@ var reusedRoot = false;
 var transpositionTable = {};
 var ttHits = 0;
 var ttStores = 0;
+var historyScore = {};
 
 function ping() {
   return "ready";
@@ -43,6 +44,7 @@ function start(r, rs, sc, pc) {
   transpositionTable = {};
   ttHits = 0;
   ttStores = 0;
+  historyScore = {};
 
   root = makeNode(state, null, null);
   rootSignature = stateKey(state);
@@ -181,6 +183,7 @@ function expandSingleAction(node, role) {
   node.children.push(child);
 
   initializeExpansion(child);
+  updateHistoryScore(node, action, child);
   backupMinimax(child, role);
 }
 
@@ -202,6 +205,10 @@ function initializeExpansion(node) {
   }
 
   var actions = shuffle(findlegals(node.state, library).slice(0));
+  // History heuristic: expand historically strong actions first.
+  actions.sort(function(a, b) {
+    return historyValue(b) - historyValue(a);
+  });
   node.unexpandedActions = actions;
 
   if (actions.length === 0) {
@@ -454,6 +461,39 @@ function storeTransposition(node) {
     terminal: node.terminal
   };
   ttStores = ttStores + 1;
+}
+
+function updateHistoryScore(parent, action, child) {
+  var key = actionKey(action);
+  var delta = 0;
+
+  if (parent.actor === role) {
+    delta = child.value - 50;
+  } else {
+    delta = 50 - child.value;
+  }
+
+  // Boost proven tactical outcomes to prioritize them quickly in future searches.
+  if (child.solved && child.solvedValue === 100) {
+    delta = delta + (parent.actor === role ? 25 : -25);
+  } else if (child.solved && child.solvedValue === 0) {
+    delta = delta + (parent.actor === role ? -25 : 25);
+  }
+
+  historyScore[key] = historyValue(action) + delta;
+}
+
+function historyValue(action) {
+  var key = actionKey(action);
+  var value = historyScore[key];
+  if (typeof value === "number") {
+    return value;
+  }
+  return 0;
+}
+
+function actionKey(action) {
+  return grind(action);
 }
 
 function terminalOrHeuristic(role, state) {
