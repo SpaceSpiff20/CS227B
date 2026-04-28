@@ -24,6 +24,9 @@ var selectionC = 18.0;
 
 var expansions = 0;
 var reusedRoot = false;
+var transpositionTable = {};
+var ttHits = 0;
+var ttStores = 0;
 
 function ping() {
   return "ready";
@@ -37,6 +40,9 @@ function start(r, rs, sc, pc) {
   library = definemorerules([], rs.slice(1));
   roles = findroles(library);
   state = findinits(library);
+  transpositionTable = {};
+  ttHits = 0;
+  ttStores = 0;
 
   root = makeNode(state, null, null);
   rootSignature = stateKey(state);
@@ -93,6 +99,9 @@ function playPersistentMinimax(role) {
   reusedRoot = true;
 
   while (expansions < maxExpansionsPerMove && Date.now() <= deadline) {
+    if (root.solved) {
+      break;
+    }
     var leaf = selectNodeForExpansion(root);
     if (!leaf) {
       break;
@@ -116,6 +125,10 @@ function playPersistentMinimax(role) {
       root.value +
       " rootChildren=" +
       root.children.length +
+      " ttSize=" +
+      Object.keys(transpositionTable).length +
+      " ttHits=" +
+      ttHits +
       " bestAction=" +
       grind(bestAction)
   );
@@ -127,6 +140,9 @@ function selectNodeForExpansion(start) {
   while (true) {
     if (!node.expanded) {
       initializeExpansion(node);
+    }
+    if (node.solved) {
+      return null;
     }
     if (node.terminal) {
       return node;
@@ -181,6 +197,7 @@ function initializeExpansion(node) {
     node.solved = true;
     node.solvedValue = node.value;
     node.unexpandedActions = [];
+    storeTransposition(node);
     return;
   }
 
@@ -192,6 +209,7 @@ function initializeExpansion(node) {
   } else {
     node.value = heuristicEval(role, node.state);
   }
+  storeTransposition(node);
 }
 
 function chooseChildByTreePolicy(node) {
@@ -234,6 +252,7 @@ function backupMinimax(node, role) {
       current.value = current.solvedValue;
     }
     current.utility = current.utility + current.value;
+    storeTransposition(current);
     current = current.parent;
   }
 }
@@ -374,7 +393,7 @@ function syncRootToState(currentState) {
   if (root && root.children.length > 0) {
     for (var i = 0; i < root.children.length; i++) {
       var child = root.children[i];
-      if (stateKey(child.state) === key) {
+      if (child.key === key) {
         root = child;
         root.parent = null;
         root.actionFromParent = null;
@@ -391,8 +410,9 @@ function syncRootToState(currentState) {
 }
 
 function makeNode(st, parent, actionFromParent) {
-  return {
+  var node = {
     state: st,
+    key: stateKey(st),
     parent: parent,
     actionFromParent: actionFromParent,
     actor: null,
@@ -406,6 +426,34 @@ function makeNode(st, parent, actionFromParent) {
     children: [],
     unexpandedActions: []
   };
+  hydrateFromTransposition(node);
+  return node;
+}
+
+function hydrateFromTransposition(node) {
+  var cached = transpositionTable[node.key];
+  if (!cached) {
+    return;
+  }
+  ttHits = ttHits + 1;
+  node.visits = cached.visits;
+  node.utility = cached.utility;
+  node.value = cached.value;
+  node.solved = cached.solved;
+  node.solvedValue = cached.solvedValue;
+  node.terminal = cached.terminal;
+}
+
+function storeTransposition(node) {
+  transpositionTable[node.key] = {
+    visits: node.visits,
+    utility: node.utility,
+    value: node.value,
+    solved: node.solved,
+    solvedValue: node.solvedValue,
+    terminal: node.terminal
+  };
+  ttStores = ttStores + 1;
 }
 
 function terminalOrHeuristic(role, state) {
