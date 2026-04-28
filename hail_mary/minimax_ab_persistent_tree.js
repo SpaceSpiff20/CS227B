@@ -178,6 +178,8 @@ function initializeExpansion(node) {
 
   if (node.terminal) {
     node.value = terminalOrHeuristic(role, node.state);
+    node.solved = true;
+    node.solvedValue = node.value;
     node.unexpandedActions = [];
     return;
   }
@@ -226,9 +228,99 @@ function backupMinimax(node, role) {
     } else {
       current.value = heuristicEval(role, current.state);
     }
+
+    updateSolvedStatus(current);
+    if (current.solved) {
+      current.value = current.solvedValue;
+    }
     current.utility = current.utility + current.value;
     current = current.parent;
   }
+}
+
+function updateSolvedStatus(node) {
+  if (node.terminal) {
+    node.solved = true;
+    node.solvedValue = terminalOrHeuristic(role, node.state);
+    return;
+  }
+
+  if (node.children.length === 0) {
+    node.solved = false;
+    node.solvedValue = null;
+    return;
+  }
+
+  var i = 0;
+  var allChildrenSolved = true;
+  var allChildrenWin100 = true;
+  var anyChildWin100 = false;
+  var allChildrenLoss0 = true;
+  var anyChildLoss0 = false;
+
+  for (i = 0; i < node.children.length; i++) {
+    var child = node.children[i];
+    if (!child.solved) {
+      allChildrenSolved = false;
+      allChildrenWin100 = false;
+      allChildrenLoss0 = false;
+      continue;
+    }
+    if (child.solvedValue === 100) {
+      anyChildWin100 = true;
+    } else {
+      allChildrenWin100 = false;
+    }
+    if (child.solvedValue === 0) {
+      anyChildLoss0 = true;
+    } else {
+      allChildrenLoss0 = false;
+    }
+  }
+
+  // If there are still unexpanded actions, outcomes not covered by current
+  // children remain unknown and we cannot mark this node solved (except terminal).
+  if (node.unexpandedActions.length > 0) {
+    node.solved = false;
+    node.solvedValue = null;
+    return;
+  }
+
+  // With full expansion, solved minimax value is exact when all children solved.
+  if (allChildrenSolved) {
+    node.solved = true;
+    node.solvedValue = minimaxChildValue(node);
+    return;
+  }
+
+  // Early proofs:
+  // - At MAX nodes (our turn), one solved 100 child proves a forced win.
+  // - At MIN nodes (opponent turn), one solved 0 child proves they can force our loss.
+  if (node.actor === role && anyChildWin100) {
+    node.solved = true;
+    node.solvedValue = 100;
+    return;
+  }
+  if (node.actor !== role && anyChildLoss0) {
+    node.solved = true;
+    node.solvedValue = 0;
+    return;
+  }
+
+  // Strong opponent/all-branch proofs require all solved children.
+  if (node.actor === role && allChildrenLoss0) {
+    node.solved = true;
+    node.solvedValue = 0;
+    return;
+  }
+  if (node.actor !== role && allChildrenWin100) {
+    node.solved = true;
+    node.solvedValue = 100;
+    return;
+  }
+
+  node.solved = false;
+  node.solvedValue = null;
 }
 
 function minimaxChildValue(node) {
@@ -252,6 +344,15 @@ function bestActionFromRoot(root) {
   if (!root || root.children.length === 0) {
     return null;
   }
+
+  // If we have a proven forced win from root, always take it.
+  for (var j = 0; j < root.children.length; j++) {
+    var forced = root.children[j];
+    if (forced.solved && forced.solvedValue === 100) {
+      return forced.actionFromParent;
+    }
+  }
+
   var bestChild = null;
   var bestValue = -1;
   for (var i = 0; i < root.children.length; i++) {
@@ -300,6 +401,8 @@ function makeNode(st, parent, actionFromParent) {
     visits: 0,
     utility: 0,
     value: 50,
+    solved: false,
+    solvedValue: null,
     children: [],
     unexpandedActions: []
   };
