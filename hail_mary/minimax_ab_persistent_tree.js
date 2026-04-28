@@ -29,6 +29,17 @@ var ttHits = 0;
 var ttStores = 0;
 var historyScore = {};
 
+var sampleMaxDepth = 30;
+var sampleMaxLegal = 1;
+var samplePlayouts = 0;
+var sampleStateCount = 0;
+var sampleTerminalCount = 0;
+var sampleTerminalRewardSum = 0;
+var sampleAvgTerminalReward = 50;
+var sampleTerminalRate = 0;
+var payoffStability = 0.35;
+var controlStability = 0.65;
+
 function ping() {
   return "ready";
 }
@@ -48,12 +59,17 @@ function start(r, rs, sc, pc) {
 
   root = makeNode(state, null, null);
   rootSignature = stateKey(state);
+  buildSamplingModel();
 
   console.log(
     "[persistent_tree] start role=" +
       role +
       " playclock=" +
       playclock +
+      " samples=" +
+      samplePlayouts +
+      " avgReward=" +
+      sampleAvgTerminalReward +
       " expansionsCap=" +
       maxExpansionsPerMove
   );
@@ -205,9 +221,9 @@ function initializeExpansion(node) {
   }
 
   var actions = shuffle(findlegals(node.state, library).slice(0));
-  // History heuristic: expand historically strong actions first.
+  // History heuristic: pop() takes the last action, so sort weakest to strongest.
   actions.sort(function(a, b) {
-    return historyValue(b) - historyValue(a);
+    return historyValue(a) - historyValue(b);
   });
   node.unexpandedActions = actions;
 
@@ -463,6 +479,60 @@ function storeTransposition(node) {
   ttStores = ttStores + 1;
 }
 
+function buildSamplingModel() {
+  var samplingDeadline = Date.now() + Math.max(100, startclock * 1000 - 1200);
+  sampleMaxLegal = 1;
+  samplePlayouts = 0;
+  sampleStateCount = 0;
+  sampleTerminalCount = 0;
+  sampleTerminalRewardSum = 0;
+  sampleAvgTerminalReward = 50;
+  sampleTerminalRate = 0;
+
+  while (Date.now() < samplingDeadline) {
+    runRandomSamplePlayout();
+  }
+
+  if (sampleTerminalCount > 0) {
+    sampleAvgTerminalReward = Math.round(
+      sampleTerminalRewardSum / sampleTerminalCount
+    );
+  }
+  if (sampleStateCount > 0) {
+    sampleTerminalRate = sampleTerminalCount / sampleStateCount;
+  }
+}
+
+function runRandomSamplePlayout() {
+  var sampleState = findinits(library);
+
+  for (var depth = 0; depth < sampleMaxDepth; depth++) {
+    sampleStateCount = sampleStateCount + 1;
+
+    if (findterminalp(sampleState, library)) {
+      sampleTerminalCount = sampleTerminalCount + 1;
+      sampleTerminalRewardSum =
+        sampleTerminalRewardSum + findreward(role, sampleState, library) * 1;
+      samplePlayouts = samplePlayouts + 1;
+      return;
+    }
+
+    var actions = findlegals(sampleState, library);
+    if (actions.length > sampleMaxLegal) {
+      sampleMaxLegal = actions.length;
+    }
+    if (actions.length === 0) {
+      samplePlayouts = samplePlayouts + 1;
+      return;
+    }
+
+    var action = actions[Math.floor(Math.random() * actions.length)];
+    sampleState = simulate(action, sampleState, library);
+  }
+
+  samplePlayouts = samplePlayouts + 1;
+}
+
 function updateHistoryScore(parent, action, child) {
   var key = actionKey(action);
   var delta = 0;
@@ -504,12 +574,26 @@ function terminalOrHeuristic(role, state) {
 }
 
 function heuristicEval(role, state) {
-  var reward = findreward(role, state, library) * 1;
   var active = findcontrol(state, library);
   var legalMoves = findlegals(state, library).length;
-  var scaledMobility = Math.min(100, legalMoves * 10);
-  var mobility = active === role ? scaledMobility : 100 - scaledMobility;
-  return clampScore(Math.round(0.7 * reward + 0.3 * mobility));
+  var mobilityRatio = Math.min(1, legalMoves / Math.max(1, sampleMaxLegal));
+
+  var payoff = findreward(role, state, library) * 1;
+  if (payoff === 0 && sampleTerminalCount > 0) {
+    payoff = Math.round(0.4 * payoff + 0.6 * sampleAvgTerminalReward);
+  }
+
+  var control = active === role ? mobilityRatio : -mobilityRatio;
+  var terminalLikelihood = clampUnit(
+    sampleTerminalRate + (1 - mobilityRatio) * 0.25
+  );
+
+  var value =
+    terminalLikelihood * payoff +
+    (1 - terminalLikelihood) *
+      ((50 + 50 * control) * controlStability + payoffStability * payoff);
+
+  return clampScore(Math.round(value));
 }
 
 function clampScore(v) {
@@ -518,6 +602,16 @@ function clampScore(v) {
   }
   if (v > 100) {
     return 100;
+  }
+  return v;
+}
+
+function clampUnit(v) {
+  if (v < 0) {
+    return 0;
+  }
+  if (v > 1) {
+    return 1;
   }
   return v;
 }
