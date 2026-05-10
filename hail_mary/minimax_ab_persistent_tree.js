@@ -18,9 +18,10 @@ var root = null;
 var rootSignature = "";
 var deadline = 0;
 
-var maxExpansionsPerMove = 2500;
-var safetyMs = 800;
-var selectionC = 18.0;
+var maxExpansionsPerMove = 100000;
+var safetyMs = 300;
+var selectionC = 8.0;
+var rewardSignalStrongThreshold = 0.6;
 
 var expansions = 0;
 var reusedRoot = false;
@@ -128,6 +129,8 @@ function playPersistentMinimax(role) {
   deadline = Date.now() + Math.max(100, playclock * 1000 - safetyMs);
   expansions = 0;
   reusedRoot = true;
+
+  refreshSamplingFromCurrentState();
 
   while (expansions < maxExpansionsPerMove && Date.now() <= deadline) {
     if (root.solved) {
@@ -247,11 +250,7 @@ function initializeExpansion(node) {
   }
 
   var actions = shuffle(findlegals(node.state, library).slice(0));
-  // History heuristic: pop() takes the last action, so sort weakest to strongest.
-  actions.sort(function(a, b) {
-    return historyValue(a) - historyValue(b);
-  });
-  node.unexpandedActions = actions;
+  node.unexpandedActions = orderUnexpandedActions(node, actions);
 
   if (actions.length === 0) {
     node.value = terminalOrHeuristic(role, node.state);
@@ -305,8 +304,10 @@ function backupMinimax(node, role) {
     updateSolvedStatus(current);
     if (current.solved) {
       current.value = current.solvedValue;
+      current.utility = current.visits * current.solvedValue;
+    } else {
+      current.utility = current.utility + current.value;
     }
-    current.utility = current.utility + current.value;
     storeTransposition(current);
     current = current.parent;
   }
@@ -492,8 +493,8 @@ function hydrateFromTransposition(node) {
     return;
   }
   ttHits = ttHits + 1;
-  node.visits = cached.visits;
-  node.utility = cached.utility;
+  // TT carries cached evaluation/proof info but NOT visit counts. Each node
+  // owns its own visits/utility so UCT statistics stay consistent per path.
   node.value = cached.value;
   node.solved = cached.solved;
   node.solvedValue = cached.solvedValue;
@@ -502,8 +503,6 @@ function hydrateFromTransposition(node) {
 
 function storeTransposition(node) {
   transpositionTable[node.key] = {
-    visits: node.visits,
-    utility: node.utility,
     value: node.value,
     solved: node.solved,
     solvedValue: node.solvedValue,
@@ -544,7 +543,11 @@ function buildSamplingModel() {
 }
 
 function runRandomSamplePlayout() {
-  var sampleState = findinits(library);
+  runRandomSamplePlayoutFrom(findinits(library));
+}
+
+function runRandomSamplePlayoutFrom(startState) {
+  var sampleState = startState;
 
   for (var depth = 0; depth < sampleMaxDepth; depth++) {
     sampleStateCount = sampleStateCount + 1;
@@ -572,6 +575,23 @@ function runRandomSamplePlayout() {
   }
 
   samplePlayouts = samplePlayouts + 1;
+}
+
+function refreshSamplingFromCurrentState() {
+  var refreshBudgetMs = Math.min(150, Math.max(30, Math.floor(playclock * 1000 * 0.05)));
+  var refreshDeadline = Date.now() + refreshBudgetMs;
+  while (Date.now() < refreshDeadline) {
+    runRandomSamplePlayoutFrom(state);
+  }
+  if (sampleTerminalCount > 0) {
+    sampleAvgTerminalReward = Math.round(
+      sampleTerminalRewardSum / sampleTerminalCount
+    );
+  }
+  if (sampleStateCount > 0) {
+    sampleTerminalRate = sampleTerminalCount / sampleStateCount;
+  }
+  estimateRewardSignalWeight();
 }
 
 function recordSampleFeatures(sampleState, legalCount) {
@@ -607,7 +627,7 @@ function estimateRewardSignalWeight() {
 }
 
 function updateHistoryScore(parent, action, child) {
-  var key = actionKey(action);
+  var key = actionKey(action, parent.actor);
   var delta = 0;
 
   if (parent.actor === role) {
@@ -623,11 +643,11 @@ function updateHistoryScore(parent, action, child) {
     delta = delta + (parent.actor === role ? -25 : 25);
   }
 
-  historyScore[key] = historyValue(action) + delta;
+  historyScore[key] = historyValueForActor(action, parent.actor) + delta;
 }
 
-function historyValue(action) {
-  var key = actionKey(action);
+function historyValueForActor(action, actor) {
+  var key = actionKey(action, actor);
   var value = historyScore[key];
   if (typeof value === "number") {
     return value;
@@ -635,8 +655,36 @@ function historyValue(action) {
   return 0;
 }
 
-function actionKey(action) {
-  return grind(action);
+function actionKey(action, actor) {
+  return (actor || "?") + "|" + grind(action);
+}
+
+function orderUnexpandedActions(node, actions) {
+  // pop() takes the last action, so we want the strongest action at the end.
+  if (rewardHeuristicWeight >= rewardSignalStrongThreshold) {
+    var scored = [];
+    for (var i = 0; i < actions.length; i++) {
+      var nextState = simulate(actions[i], node.state, library);
+      var reward = findreward(role, nextState, library) * 1;
+      // From the parent's actor perspective: our turn prefers high reward,
+      // opponent turn prefers low reward (so it's most threatening to us).
+      var orderingScore = node.actor === role ? reward : 100 - reward;
+      scored.push({ action: actions[i], score: orderingScore });
+    }
+    scored.sort(function(a, b) {
+      return a.score - b.score;
+    });
+    var ordered = [];
+    for (var k = 0; k < scored.length; k++) {
+      ordered.push(scored[k].action);
+    }
+    return ordered;
+  }
+
+  actions.sort(function(a, b) {
+    return historyValueForActor(a, node.actor) - historyValueForActor(b, node.actor);
+  });
+  return actions;
 }
 
 function terminalOrHeuristic(role, state) {
@@ -647,13 +695,21 @@ function terminalOrHeuristic(role, state) {
 }
 
 function heuristicEval(role, state) {
+  var rawReward = findreward(role, state, library) * 1;
+
+  // When the reward signal is strong (e.g., material/king-safety games like
+  // Skirmish), trust raw findreward and skip mobility/control heuristics
+  // entirely. They can mislead tactical decisions.
+  if (rewardHeuristicWeight >= rewardSignalStrongThreshold) {
+    return clampScore(Math.round(rawReward));
+  }
+
   var active = findcontrol(state, library);
   var legalMoves = findlegals(state, library).length;
   var mobilityRatio = Math.min(1, legalMoves / Math.max(1, sampleMaxLegal));
 
-  var rawReward = findreward(role, state, library) * 1;
   var payoff = rawReward;
-  if (payoff === 0 && sampleTerminalCount > 0 && rewardHeuristicWeight < 0.5) {
+  if (payoff === 0 && sampleTerminalCount > 0) {
     payoff = Math.round(0.4 * payoff + 0.6 * sampleAvgTerminalReward);
   }
 
