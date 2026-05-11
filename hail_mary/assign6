@@ -1,0 +1,497 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>hm_a6_headstart</title>
+
+  <script type='text/javascript' src='http://epilog.stanford.edu/javascript/epilog.js'></script>
+  <script type='text/javascript' src='http://gamemaster.stanford.edu/javascript/localstorage.js'></script>
+  <script type='text/javascript' src='http://gamemaster.stanford.edu/reasoning/general.js'></script>
+
+  <script type='text/javascript'>
+
+//==============================================================================
+//
+// ASSIGNMENT 6 - HEADSTART METAGAMING PLAYER
+// Team hail_mary
+//
+// This player uses Persistent Tree Search (PTS) with a Headstart
+// metagaming strategy.
+//
+// During the start clock, the player begins building its search tree
+// before the first move is played. Then during each play clock, the
+// player continues expanding the same persistent tree.
+//
+// Features:
+// - Persistent Tree Search
+// - Headstart metagaming
+// - Iterative tree processing until timeout
+// - Simple utility propagation
+// - Tree reuse across moves
+//
+//==============================================================================
+
+//==============================================================================
+// Global variables
+//==============================================================================
+
+var manager = 'manager';
+var player = 'hm_a6_headstart';
+
+var role = 'robot';
+
+var rules = [];
+var library = [];
+var roles = [];
+var state = [];
+var startclock = 10;
+var playclock = 10;
+
+var tree = null;
+
+// Leave some safety buffer before timeout
+var safetyMargin = 1000;
+
+//==============================================================================
+// Basic protocol functions
+//==============================================================================
+
+function ping ()
+{
+  return 'ready';
+}
+
+function stop (move)
+{
+  return false;
+}
+
+function abort ()
+{
+  return false;
+}
+
+//==============================================================================
+// START
+// Initializes the game and performs headstart metagaming.
+//==============================================================================
+
+function start (r, rs, sc, pc)
+{
+  role = r;
+
+  rules = rs.slice(1);
+
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+
+  library = definemorerules([], rules);
+
+  roles = findroles(library);
+
+  state = findinits(library);
+
+  // Create initial root node
+  var reward = parseInt(findreward(role, state, library));
+
+  tree = makeNode(
+    state,
+    findcontrol(state, library),
+    reward
+  );
+  //==========================================================================
+  // HEADSTART METAGAMING
+  //
+  // Build the search tree during the start clock.
+  //==========================================================================
+
+  var deadline = Date.now() + Math.max(1000, (startclock * 1000) - safetyMargin);
+
+  while (Date.now() < deadline)
+  {
+    process(tree);
+  }
+
+  return 'ready';
+}
+
+//==============================================================================
+// PLAY
+// Reuses the persistent tree and continues searching.
+//==============================================================================
+
+function play (move)
+{
+  //==========================================================================
+  // Update tree after opponent move
+  //==========================================================================
+
+  if (move !== nil)
+  {
+    tree = subtree(move, tree);
+    state = tree.state;
+  }
+
+  // Not our turn
+  if (findcontrol(state, library) !== role)
+  {
+    return false;
+  }
+
+  //==========================================================================
+  // Continue tree search during play clock
+  //==========================================================================
+
+  var deadline = Date.now() + Math.max(1000, (playclock * 1000) - safetyMargin);
+  while (Date.now() < deadline)
+  {
+    process(tree);
+  }
+  return selectAction(tree);
+}
+
+//==============================================================================
+// TREE NODE
+//==============================================================================
+
+function makeNode (state, mover, reward)
+{
+  return {
+    state: state,
+    mover: mover,
+    utility: reward,
+    visits: 0,
+    actions: [],
+    children: []
+  };
+}
+
+//==============================================================================
+// PROCESS
+// Selection -> Expansion -> Backpropagation
+//==============================================================================
+
+function process (node)
+{
+  // Terminal node
+  if (findterminalp(node.state, library))
+  {
+    return true;
+  }
+  // Expand if leaf node
+  if (node.children.length === 0)
+  {
+    expand(node);
+  }
+  else
+  {
+    process(select(node));
+  }
+  // Backpropagation
+  update(node);
+  return true;
+}
+
+//==============================================================================
+// EXPANSION
+//==============================================================================
+
+function expand (node)
+{
+  node.actions = findlegals(node.state, library);
+  for (var i = 0; i < node.actions.length; i++)
+  {
+    var action = node.actions[i];
+
+    var newState = simulate(action, node.state, library);
+    var newMover = findcontrol(newState, library);
+    var newReward = parseInt(findreward(role, newState, library));
+    node.children[i] = makeNode(newState, newMover, newReward);
+  }
+  return true;
+}
+
+//==============================================================================
+// SELECTION
+// Select child with highest exploration score.
+//==============================================================================
+
+function select (node)
+{
+  var child = node.children[0];
+
+  var score =
+    value(
+      child.utility,
+      child.visits,
+      node.visits
+    );
+
+  for (var i = 1; i < node.children.length; i++)
+  {
+    var newChild = node.children[i];
+
+    var newScore = value(newChild.utility, newChild.visits, node.visits);
+    if (newScore > score)
+    {
+      child = newChild;
+      score = newScore;
+    }
+  }
+
+  return child;
+}
+
+//==============================================================================
+// EXPLORATION + EXPLOITATION
+//==============================================================================
+
+function value (utility, visits, total)
+{
+  if (visits === 0)
+  {
+    return 1000000;
+  }
+  var exploration = Math.round((1 - (visits / Math.max(total, 1))) * 100);
+  return utility + exploration;
+}
+
+//==============================================================================
+// BACKPROPAGATION
+//==============================================================================
+
+function update (node)
+{
+  if (node.children.length === 0)
+  {
+    node.visits = node.visits + 1;
+    return true;
+  }
+
+  if (node.mover === role)
+  {
+    node.utility = scoreMax(node);
+  }
+  else
+  {
+    node.utility = scoreMin(node);
+  }
+
+  node.visits = node.visits + 1;
+
+  return true;
+}
+
+//==============================================================================
+// MAX SCORE
+//==============================================================================
+
+function scoreMax (node)
+{
+  var score = node.children[0].utility;
+
+  for (var i = 1; i < node.children.length; i++)
+  {
+    var newScore = node.children[i].utility;
+
+    if (newScore > score)
+    {
+      score = newScore;
+    }
+  }
+
+  return score;
+}
+
+//==============================================================================
+// MIN SCORE
+//==============================================================================
+
+function scoreMin (node)
+{
+  var score = node.children[0].utility;
+
+  for (var i = 1; i < node.children.length; i++)
+  {
+    var newScore = node.children[i].utility;
+
+    if (newScore < score)
+    {
+      score = newScore;
+    }
+  }
+  return score;
+}
+
+//==============================================================================
+// SELECT FINAL ACTION
+//==============================================================================
+
+function selectAction (node)
+{
+  // Fallback
+  if (node.actions.length === 0)
+  {
+    return findlegalx(state, library);
+  }
+
+  var action = node.actions[0];
+
+  var score = node.children[0].utility;
+
+  for (var i = 1; i < node.children.length; i++)
+  {
+    var newScore = node.children[i].utility;
+
+    if (newScore > score)
+    {
+      action = node.actions[i];
+      score = newScore;
+    }
+  }
+
+  return action;
+}
+
+//==============================================================================
+// TREE REUSE
+//
+// Reuse subtree after move.
+//==============================================================================
+
+function subtree (move, node)
+{
+  // Expand if needed
+  if (node.children.length === 0)
+  {
+    expand(node);
+  }
+
+  for (var i = 0; i < node.actions.length; i++)
+  {
+    if (equalp(move, node.actions[i]))
+    {
+      return node.children[i];
+    }
+  }
+
+  // Fallback if move not found
+  return node;
+}
+
+//==============================================================================
+// End of player code
+//==============================================================================
+
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='doinitialize()'>
+
+  <center>
+
+    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+
+  <table width='640' cellpadding='0'>
+
+    <tr>
+
+      <td width='180' align='center' valign='center'>
+        <img width='130'
+             src='http://gamemaster.stanford.edu/images/ggp.jpg'/>
+      </td>
+
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+
+      <td width='180'
+          align='center'
+          style='color:#000066;font-size:18px'>
+
+        <i>General<br/>Game<br/>Playing</i>
+
+      </td>
+
+    </tr>
+
+  </table>
+
+</center>
+
+<!--=======================================================================-->
+
+<br/>
+
+<table width='640'
+       cellpadding='8'
+       cellspacing='0'
+       bgcolor='#f4f8f8'
+       border='1'>
+
+  <tr height='40'>
+    <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+
+Protocol: localstorage<br/>
+Metagamer: headstart<br/>
+Strategy: persistent tree search<br/>
+
+Identifier:
+<span id='player'>hm_a6_headstart</span>
+
+<img src="http://gamemaster.stanford.edu/images/pencil.gif"
+     onclick='doplayer()'/>
+
+    </td>
+
+  </tr>
+
+</table>
+
+    </td>
+
+  </tr>
+
+</table>
+
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <textarea id='transcript'
+            style='font-family:courier'
+            rows='30'
+            cols='80'
+            readonly></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+
+    </table>
+
+  </center>
+
+</body>
+
+<!--=======================================================================-->
+
+</html>
